@@ -169,49 +169,11 @@ else
     # https://github.com/mxcl/homebrew/blob/master/Library/Formula/openssl.rb
     ./Configure no-shared zlib-dynamic --prefix="$DIR/build/openssl-out" darwin64-x86_64-cc enable-ec_nistp_64_gcc_128
 fi
-make install
+$MAKE install
 
 # To see the mongo changelog, go to http://www.mongodb.org/downloads,
 # click 'changelog' under the current version, then 'release notes' in
 # the upper right.
-<<<<<<< HEAD
-cd "$DIR"
-if [ "$MONGO_OS" != "freebsd" ] ; then
-    MONGO_VERSION="2.4.3"
-    MONGO_NAME="mongodb-${MONGO_OS}-${ARCH}-${MONGO_VERSION}"
-    MONGO_URL="http://fastdl.mongodb.org/${MONGO_OS}/${MONGO_NAME}.tgz"
-    curl "$MONGO_URL" | tar -xz
-    mv "$MONGO_NAME" mongodb
-else
-    cp -R /usr/ports/databases/mongodb mongodb-build
-    cd mongodb-build
-    make
-    cd ..
-    mkdir -p mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/bsondump mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongo mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongod mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongodump mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongoexport mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongofiles mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongoimport mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongooplog mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongoperf mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongorestore mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongos mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongosniff mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongostat mongodb/bin
-    cp mongodb-build/work/mongodb-src-r2.4.4/mongotop mongodb/bin
-    rm -R mongodb-build
-fi
-
-# don't ship a number of mongo binaries. they are big and unused. these
-# could be deleted from git dev_bundle but not sure which we'll end up
-# needing.
-cd mongodb/bin
-rm bsondump mongodump mongoexport mongofiles mongoimport mongorestore mongos mongosniff mongostat mongotop mongooplog mongoperf
-cd ../..
-=======
 cd "$DIR/build"
 MONGO_VERSION="2.4.9"
 
@@ -230,6 +192,12 @@ if [ "$MONGO_OS" == "osx" ]; then
     # NOTE: '--64' option breaks the compilation, even it is on by default on x64 mac: https://jira.mongodb.org/browse/SERVER-5575
     MONGO_FLAGS+="--openssl=$DIR/build/openssl-out/lib "
     /usr/local/bin/scons $MONGO_FLAGS mongo mongod
+elif [ "$MONGO_OS" == "freebsd" ]; then
+    MONGO_FLAGS+="--no-glibc-check --prefix=./ "
+    if [ "$ARCH" == "x86_64" ]; then
+      MONGO_FLAGS+="--64"
+    fi
+    scons $MONGO_FLAGS mongo mongod
 elif [ "$MONGO_OS" == "linux" ]; then
     MONGO_FLAGS+="--no-glibc-check --prefix=./ "
     if [ "$ARCH" == "x86_64" ]; then
@@ -240,7 +208,6 @@ else
     echo "We don't know how to compile mongo for this platform"
     exit 1
 fi
->>>>>>> upstream/master
 
 # Copy binaries
 mkdir -p "$DIR/mongodb/bin"
