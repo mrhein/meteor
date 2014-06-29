@@ -12,6 +12,10 @@ _.extend(Meteor.EnvironmentVariable.prototype, {
     return currentValues[this.slot];
   },
 
+  getOrNullIfOutsideFiber: function () {
+    return this.get();
+  },
+
   withValue: function (value, func) {
     var saved = currentValues[this.slot];
     try {
@@ -30,8 +34,15 @@ Meteor.bindEnvironment = function (func, onException, _this) {
   // values
   var boundValues = _.clone(currentValues);
 
-  if (!onException)
-    throw new Error("onException must be supplied");
+  if (!onException || typeof(onException) === 'string') {
+    var description = onException || "callback of async function";
+    onException = function (error) {
+      Meteor._debug(
+        "Exception in " + description + ":",
+        error && error.stack || error
+      );
+    };
+  }
 
   return function (/* arguments */) {
     var savedValues = currentValues;
@@ -39,10 +50,16 @@ Meteor.bindEnvironment = function (func, onException, _this) {
       currentValues = boundValues;
       var ret = func.apply(_this, _.toArray(arguments));
     } catch (e) {
+      // note: callback-hook currently relies on the fact that if onException
+      // throws in the browser, the wrapped call throws.
       onException(e);
     } finally {
       currentValues = savedValues;
     }
     return ret;
   };
+};
+
+Meteor._nodeCodeMustBeInFiber = function () {
+  // no-op on browser
 };

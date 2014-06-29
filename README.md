@@ -40,7 +40,8 @@ can run Meteor directly from a git checkout.
 
 If you're the sort of person who likes to build everything from scratch,
 you can build all the Meteor dependencies (node.js, npm, mongodb, etc)
-with the provided script. If you do not run this script, Meteor will
+with the provided script. This requires git, a C and C++ compiler,
+autotools, and scons. If you do not run this script, Meteor will
 automatically download pre-compiled binaries when you first run it.
 
     # FreeBSD only
@@ -58,8 +59,8 @@ From your checkout, you can read the docs locally. The `/docs` directory is a
 meteor application, so simply change into the `/docs` directory and launch
 the app:
 
-	cd docs/
-	meteor
+    cd docs/
+    ../meteor
 
 You'll then be able to read the docs locally in your browser at
 `http://localhost:3000/`

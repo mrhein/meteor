@@ -3,7 +3,7 @@ var loginButtonsSession = Accounts._loginButtonsSession;
 
 // events shared between loginButtonsLoggedOutDropdown and
 // loginButtonsLoggedInDropdown
-Template._loginButtons.events({
+Template.loginButtons.events({
   'click #login-name-link, click #login-sign-in-link': function () {
     loginButtonsSession.set('dropdownVisible', true);
     Deps.flush();
@@ -26,9 +26,7 @@ Template._loginButtonsLoggedInDropdown.events({
   }
 });
 
-Template._loginButtonsLoggedInDropdown.displayName = function () {
-  return Accounts._loginButtons.displayName();
-};
+Template._loginButtonsLoggedInDropdown.displayName = displayName;
 
 Template._loginButtonsLoggedInDropdown.inChangePasswordFlow = function () {
   return loginButtonsSession.get('inChangePasswordFlow');
@@ -96,7 +94,9 @@ Template._loginButtonsLoggedOutDropdown.events({
         document.getElementById('login-username').value = usernameOrEmail;
     else
       document.getElementById('login-email').value = usernameOrEmail;
-    // "login-password" is preserved, since password fields aren't updated by Spark.
+
+    if (password !== null)
+      document.getElementById('login-password').value = password;
 
     // Force redrawing the `login-dropdown-list` element because of
     // a bizarre Chrome bug in which part of the DIV is not redrawn
@@ -136,6 +136,8 @@ Template._loginButtonsLoggedOutDropdown.events({
     var username = trimmedElementValueById('login-username');
     var email = trimmedElementValueById('login-email')
           || trimmedElementValueById('forgot-password-email'); // Ughh. Standardize on names?
+    // notably not trimmed. a password could (?) start or end with a space
+    var password = elementValueById('login-password');
 
     loginButtonsSession.set('inSignupFlow', false);
     loginButtonsSession.set('inForgotPasswordFlow', false);
@@ -146,9 +148,12 @@ Template._loginButtonsLoggedOutDropdown.events({
       document.getElementById('login-username').value = username;
     if (document.getElementById('login-email'))
       document.getElementById('login-email').value = email;
-    // "login-password" is preserved, since password fields aren't updated by Spark.
+
     if (document.getElementById('login-username-or-email'))
       document.getElementById('login-username-or-email').value = email || username;
+
+    if (password !== null)
+      document.getElementById('login-password').value = password;
   },
   'keypress #login-username, keypress #login-email, keypress #login-username-or-email, keypress #login-password, keypress #login-password-again': function (event) {
     if (event.keyCode === 13)
@@ -158,7 +163,7 @@ Template._loginButtonsLoggedOutDropdown.events({
 
 // additional classes that can be helpful in styling the dropdown
 Template._loginButtonsLoggedOutDropdown.additionalClasses = function () {
-  if (!Accounts.password) {
+  if (!hasPasswordService()) {
     return false;
   } else {
     if (loginButtonsSession.get('inSignupFlow')) {
@@ -175,26 +180,21 @@ Template._loginButtonsLoggedOutDropdown.dropdownVisible = function () {
   return loginButtonsSession.get('dropdownVisible');
 };
 
-Template._loginButtonsLoggedOutDropdown.hasPasswordService = function () {
-  return Accounts._loginButtons.hasPasswordService();
-};
+Template._loginButtonsLoggedOutDropdown.hasPasswordService = hasPasswordService;
 
 // return all login services, with password last
-Template._loginButtonsLoggedOutAllServices.services = function () {
-  return Accounts._loginButtons.getLoginServices();
-};
+Template._loginButtonsLoggedOutAllServices.services = getLoginServices;
 
 Template._loginButtonsLoggedOutAllServices.isPasswordService = function () {
   return this.name === 'password';
 };
 
 Template._loginButtonsLoggedOutAllServices.hasOtherServices = function () {
-  return Accounts._loginButtons.getLoginServices().length > 1;
+  return getLoginServices().length > 1;
 };
 
-Template._loginButtonsLoggedOutAllServices.hasPasswordService = function () {
-  return Accounts._loginButtons.hasPasswordService();
-};
+Template._loginButtonsLoggedOutAllServices.hasPasswordService =
+  hasPasswordService;
 
 Template._loginButtonsLoggedOutPasswordService.fields = function () {
   var loginFields = [
@@ -202,15 +202,15 @@ Template._loginButtonsLoggedOutPasswordService.fields = function () {
      visible: function () {
        return _.contains(
          ["USERNAME_AND_EMAIL", "USERNAME_AND_OPTIONAL_EMAIL"],
-         Accounts.ui._passwordSignupFields());
+         passwordSignupFields());
      }},
     {fieldName: 'username', fieldLabel: 'Username',
      visible: function () {
-       return Accounts.ui._passwordSignupFields() === "USERNAME_ONLY";
+       return passwordSignupFields() === "USERNAME_ONLY";
      }},
     {fieldName: 'email', fieldLabel: 'Email', inputType: 'email',
      visible: function () {
-       return Accounts.ui._passwordSignupFields() === "EMAIL_ONLY";
+       return passwordSignupFields() === "EMAIL_ONLY";
      }},
     {fieldName: 'password', fieldLabel: 'Password', inputType: 'password',
      visible: function () {
@@ -223,17 +223,17 @@ Template._loginButtonsLoggedOutPasswordService.fields = function () {
      visible: function () {
        return _.contains(
          ["USERNAME_AND_EMAIL", "USERNAME_AND_OPTIONAL_EMAIL", "USERNAME_ONLY"],
-         Accounts.ui._passwordSignupFields());
+         passwordSignupFields());
      }},
     {fieldName: 'email', fieldLabel: 'Email', inputType: 'email',
      visible: function () {
        return _.contains(
          ["USERNAME_AND_EMAIL", "EMAIL_ONLY"],
-         Accounts.ui._passwordSignupFields());
+         passwordSignupFields());
      }},
     {fieldName: 'email', fieldLabel: 'Email (optional)', inputType: 'email',
      visible: function () {
-       return Accounts.ui._passwordSignupFields() === "USERNAME_AND_OPTIONAL_EMAIL";
+       return passwordSignupFields() === "USERNAME_AND_OPTIONAL_EMAIL";
      }},
     {fieldName: 'password', fieldLabel: 'Password', inputType: 'password',
      visible: function () {
@@ -247,7 +247,7 @@ Template._loginButtonsLoggedOutPasswordService.fields = function () {
        // the "forgot password" flow.
        return _.contains(
          ["USERNAME_AND_OPTIONAL_EMAIL", "USERNAME_ONLY"],
-         Accounts.ui._passwordSignupFields());
+         passwordSignupFields());
      }}
   ];
 
@@ -273,7 +273,7 @@ Template._loginButtonsLoggedOutPasswordService.showCreateAccountLink = function 
 Template._loginButtonsLoggedOutPasswordService.showForgotPasswordLink = function () {
   return _.contains(
     ["USERNAME_AND_EMAIL", "USERNAME_AND_OPTIONAL_EMAIL", "EMAIL_ONLY"],
-    Accounts.ui._passwordSignupFields());
+    passwordSignupFields());
 };
 
 Template._loginButtonsFormField.inputType = function () {
@@ -313,7 +313,7 @@ Template._loginButtonsChangePassword.fields = function () {
        // the "forgot password" flow.
        return _.contains(
          ["USERNAME_AND_OPTIONAL_EMAIL", "USERNAME_ONLY"],
-         Accounts.ui._passwordSignupFields());
+         passwordSignupFields());
      }}
   ];
 };
@@ -336,7 +336,7 @@ var trimmedElementValueById = function(id) {
   if (!element)
     return null;
   else
-    return element.value.replace(/^\s*|\s*$/g, ""); // trim;
+    return element.value.replace(/^\s*|\s*$/g, ""); // trim() doesn't work on IE8;
 };
 
 var loginOrSignup = function () {
@@ -357,19 +357,19 @@ var login = function () {
 
   var loginSelector;
   if (username !== null) {
-    if (!Accounts._loginButtons.validateUsername(username))
+    if (!validateUsername(username))
       return;
     else
       loginSelector = {username: username};
   } else if (email !== null) {
-    if (!Accounts._loginButtons.validateEmail(email))
+    if (!validateEmail(email))
       return;
     else
       loginSelector = {email: email};
   } else if (usernameOrEmail !== null) {
     // XXX not sure how we should validate this. but this seems good enough (for now),
     // since an email must have at least 3 characters anyways
-    if (!Accounts._loginButtons.validateUsername(usernameOrEmail))
+    if (!validateUsername(usernameOrEmail))
       return;
     else
       loginSelector = usernameOrEmail;
@@ -393,7 +393,7 @@ var signup = function () {
 
   var username = trimmedElementValueById('login-username');
   if (username !== null) {
-    if (!Accounts._loginButtons.validateUsername(username))
+    if (!validateUsername(username))
       return;
     else
       options.username = username;
@@ -401,7 +401,7 @@ var signup = function () {
 
   var email = trimmedElementValueById('login-email');
   if (email !== null) {
-    if (!Accounts._loginButtons.validateEmail(email))
+    if (!validateEmail(email))
       return;
     else
       options.email = email;
@@ -409,7 +409,7 @@ var signup = function () {
 
   // notably not trimmed. a password could (?) start or end with a space
   var password = elementValueById('login-password');
-  if (!Accounts._loginButtons.validatePassword(password))
+  if (!validatePassword(password))
     return;
   else
     options.password = password;
@@ -450,7 +450,7 @@ var changePassword = function () {
 
   // notably not trimmed. a password could (?) start or end with a space
   var password = elementValueById('login-password');
-  if (!Accounts._loginButtons.validatePassword(password))
+  if (!validatePassword(password))
     return;
 
   if (!matchPasswordAgainIfPresent())

@@ -1,4 +1,6 @@
-Oauth.registerService('weibo', 2, null, function(query) {
+Weibo = {};
+
+OAuth.registerService('weibo', 2, null, function(query) {
 
   var response = getTokenResponse(query);
   var uid = parseInt(response.uid, 10);
@@ -31,20 +33,21 @@ Oauth.registerService('weibo', 2, null, function(query) {
 var getTokenResponse = function (query) {
   var config = ServiceConfiguration.configurations.findOne({service: 'weibo'});
   if (!config)
-    throw new ServiceConfiguration.ConfigError("Service not configured");
+    throw new ServiceConfiguration.ConfigError();
 
   var response;
   try {
-    response = Meteor.http.post(
+    response = HTTP.post(
       "https://api.weibo.com/oauth2/access_token", {params: {
         code: query.code,
         client_id: config.clientId,
-        client_secret: config.secret,
+        client_secret: OAuth.openSecret(config.secret),
         redirect_uri: Meteor.absoluteUrl("_oauth/weibo?close", {replaceLocalhost: true}),
         grant_type: 'authorization_code'
       }});
   } catch (err) {
-    throw new Error("Failed to complete OAuth handshake with Weibo. " + err.message);
+    throw _.extend(new Error("Failed to complete OAuth handshake with Weibo. " + err.message),
+                   {response: err.response});
   }
 
   // result.headers["content-type"] is 'text/plain;charset=UTF-8', so
@@ -60,14 +63,15 @@ var getTokenResponse = function (query) {
 
 var getIdentity = function (accessToken, userId) {
   try {
-    return Meteor.http.get(
+    return HTTP.get(
       "https://api.weibo.com/2/users/show.json",
       {params: {access_token: accessToken, uid: userId}}).data;
   } catch (err) {
-    throw new Error("Failed to fetch identity from Weibo. " + err.message);
+    throw _.extend(new Error("Failed to fetch identity from Weibo. " + err.message),
+                   {response: err.response});
   }
 };
 
-Weibo.retrieveCredential = function(credentialToken) {
-  return Oauth.retrieveCredential(credentialToken);
+Weibo.retrieveCredential = function(credentialToken, credentialSecret) {
+  return OAuth.retrieveCredential(credentialToken, credentialSecret);
 };

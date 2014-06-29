@@ -1,7 +1,9 @@
+Facebook = {};
+
 var querystring = Npm.require('querystring');
 
 
-Oauth.registerService('facebook', 2, null, function(query) {
+OAuth.registerService('facebook', 2, null, function(query) {
 
   var response = getTokenResponse(query);
   var accessToken = response.accessToken;
@@ -42,22 +44,23 @@ var isJSON = function (str) {
 var getTokenResponse = function (query) {
   var config = ServiceConfiguration.configurations.findOne({service: 'facebook'});
   if (!config)
-    throw new ServiceConfiguration.ConfigError("Service not configured");
+    throw new ServiceConfiguration.ConfigError();
 
   var responseContent;
   try {
     // Request an access token
-    responseContent = Meteor.http.get(
+    responseContent = HTTP.get(
       "https://graph.facebook.com/oauth/access_token", {
         params: {
           client_id: config.appId,
           redirect_uri: Meteor.absoluteUrl("_oauth/facebook?close"),
-          client_secret: config.secret,
+          client_secret: OAuth.openSecret(config.secret),
           code: query.code
         }
       }).content;
   } catch (err) {
-    throw new Error("Failed to complete OAuth handshake with Facebook. " + err.message);
+    throw _.extend(new Error("Failed to complete OAuth handshake with Facebook. " + err.message),
+                   {response: err.response});
   }
 
   // If 'responseContent' parses as JSON, it is an error.
@@ -84,13 +87,14 @@ var getTokenResponse = function (query) {
 
 var getIdentity = function (accessToken) {
   try {
-    return Meteor.http.get("https://graph.facebook.com/me", {
+    return HTTP.get("https://graph.facebook.com/me", {
       params: {access_token: accessToken}}).data;
   } catch (err) {
-    throw new Error("Failed to fetch identity from Facebook. " + err.message);
+    throw _.extend(new Error("Failed to fetch identity from Facebook. " + err.message),
+                   {response: err.response});
   }
 };
 
-Facebook.retrieveCredential = function(credentialToken) {
-  return Oauth.retrieveCredential(credentialToken);
+Facebook.retrieveCredential = function(credentialToken, credentialSecret) {
+  return OAuth.retrieveCredential(credentialToken, credentialSecret);
 };

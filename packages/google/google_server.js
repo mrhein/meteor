@@ -1,9 +1,11 @@
+Google = {};
+
 // https://developers.google.com/accounts/docs/OAuth2Login#userinfocall
 Google.whitelistedFields = ['id', 'email', 'verified_email', 'name', 'given_name',
                    'family_name', 'picture', 'locale', 'timezone', 'gender'];
 
 
-Oauth.registerService('google', 2, null, function(query) {
+OAuth.registerService('google', 2, null, function(query) {
 
   var response = getTokens(query);
   var accessToken = response.accessToken;
@@ -36,20 +38,21 @@ Oauth.registerService('google', 2, null, function(query) {
 var getTokens = function (query) {
   var config = ServiceConfiguration.configurations.findOne({service: 'google'});
   if (!config)
-    throw new ServiceConfiguration.ConfigError("Service not configured");
+    throw new ServiceConfiguration.ConfigError();
 
   var response;
   try {
-    response = Meteor.http.post(
+    response = HTTP.post(
       "https://accounts.google.com/o/oauth2/token", {params: {
         code: query.code,
         client_id: config.clientId,
-        client_secret: config.secret,
+        client_secret: OAuth.openSecret(config.secret),
         redirect_uri: Meteor.absoluteUrl("_oauth/google?close"),
         grant_type: 'authorization_code'
       }});
   } catch (err) {
-    throw new Error("Failed to complete OAuth handshake with Google. " + err.message);
+    throw _.extend(new Error("Failed to complete OAuth handshake with Google. " + err.message),
+                   {response: err.response});
   }
 
   if (response.data.error) { // if the http response was a json object with an error attribute
@@ -65,14 +68,16 @@ var getTokens = function (query) {
 
 var getIdentity = function (accessToken) {
   try {
-    return Meteor.http.get(
+    return HTTP.get(
       "https://www.googleapis.com/oauth2/v1/userinfo",
       {params: {access_token: accessToken}}).data;
   } catch (err) {
-    throw new Error("Failed to fetch identity from Google. " + err.message);
+    throw _.extend(new Error("Failed to fetch identity from Google. " + err.message),
+                   {response: err.response});
   }
 };
 
-Google.retrieveCredential = function(credentialToken) {
-  return Oauth.retrieveCredential(credentialToken);
+
+Google.retrieveCredential = function(credentialToken, credentialSecret) {
+  return OAuth.retrieveCredential(credentialToken, credentialSecret);
 };

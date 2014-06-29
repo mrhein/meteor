@@ -4,7 +4,7 @@ set -e
 set -u
 
 # cd to top level dir
-cd `dirname $0`
+cd "`dirname "$0"`"
 cd ../..
 TOPDIR=$(pwd)
 
@@ -40,13 +40,14 @@ MANIFEST_PACKAGE_CHUNK=$(cat "$TOPDIR/.package_manifest_chunk")
 rm "$TOPDIR/.tools_version"
 rm "$TOPDIR/.package_manifest_chunk"
 
-cat > "$OUTDIR/release.json" <<ENDOFMANIFEST
+cat > "$OUTDIR/release.json-$PLATFORM" <<ENDOFMANIFEST
 {
   "tools": "$TOOLS_VERSION",
   "packages": {
 $MANIFEST_PACKAGE_CHUNK
-  }
+  },
+  "upgraders": ["app-packages", "no-preserve-inputs"]
 }
 ENDOFMANIFEST
 
-cat "$OUTDIR/release.json"
+cat "$OUTDIR/release.json-$PLATFORM"

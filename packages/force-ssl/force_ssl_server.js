@@ -1,10 +1,12 @@
+var url = Npm.require("url");
+
 // Unfortunately we can't use a connect middleware here since
 // sockjs installs itself prior to all existing listeners
 // (meaning prior to any connect middlewares) so we need to take
 // an approach similar to overshadowListeners in
 // https://github.com/sockjs/sockjs-node/blob/cf820c55af6a9953e16558555a31decea554f70e/src/utils.coffee
 
-var httpServer = __meteor_bootstrap__.httpServer;
+var httpServer = WebApp.httpServer;
 var oldHttpServerListeners = httpServer.listeners('request').slice(0);
 httpServer.removeAllListeners('request');
 httpServer.addListener('request', function (req, res) {
@@ -22,11 +24,12 @@ httpServer.addListener('request', function (req, res) {
   // Determine if the connection is only over localhost. Both we
   // received it on localhost, and all proxies involved received on
   // localhost.
+  var localhostRegexp = /^\s*(127\.0\.0\.1|::1)\s*$/;
   var isLocal = (
-    remoteAddress === "127.0.0.1" &&
+    localhostRegexp.test(remoteAddress) &&
       (!req.headers['x-forwarded-for'] ||
        _.all(req.headers['x-forwarded-for'].split(','), function (x) {
-         return /\s*127\.0\.0\.1\s*/.test(x);
+         return localhostRegexp.test(x);
        })));
 
   // Determine if the connection was over SSL at any point. Either we
@@ -38,10 +41,7 @@ httpServer.addListener('request', function (req, res) {
   if (!isLocal && !isSsl) {
     // connection is not cool. send a 302 redirect!
 
-    // if we don't have a host header, there's not a lot we can do. We
-    // don't know how to redirect them.
-    // XXX can we do better here?
-    var host = req.headers.host || 'no-host-header';
+    var host = url.parse(Meteor.absoluteUrl()).hostname;
 
     // strip off the port number. If we went to a URL with a custom
     // port, we don't know what the custom SSL port is anyway.

@@ -1,3 +1,5 @@
+Github = {};
+
 // Request Github credentials for the user
 // @param options {optional}
 // @param credentialRequestCompleteCallback {Function} Callback function to call on
@@ -12,10 +14,11 @@ Github.requestCredential = function (options, credentialRequestCompleteCallback)
 
   var config = ServiceConfiguration.configurations.findOne({service: 'github'});
   if (!config) {
-    credentialRequestCompleteCallback && credentialRequestCompleteCallback(new ServiceConfiguration.ConfigError("Service not configured"));
+    credentialRequestCompleteCallback && credentialRequestCompleteCallback(
+      new ServiceConfiguration.ConfigError());
     return;
   }
-  var credentialToken = Random.id();
+  var credentialToken = Random.secret();
 
   var scope = (options && options.requestPermissions) || [];
   var flatScope = _.map(scope, encodeURIComponent).join('+');
@@ -27,6 +30,9 @@ Github.requestCredential = function (options, credentialRequestCompleteCallback)
         '&redirect_uri=' + Meteor.absoluteUrl('_oauth/github?close') +
         '&state=' + credentialToken;
 
-  Oauth.initiateLogin(credentialToken, loginUrl, credentialRequestCompleteCallback,
-                                {width: 900, height: 450});
+  OAuth.showPopup(
+    loginUrl,
+    _.bind(credentialRequestCompleteCallback, null, credentialToken),
+    {width: 900, height: 450}
+  );
 };

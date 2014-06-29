@@ -1,4 +1,6 @@
-Oauth.registerService('meetup', 2, null, function(query) {
+Meetup = {};
+
+OAuth.registerService('meetup', 2, null, function(query) {
 
   var accessToken = getAccessToken(query);
   var identity = getIdentity(accessToken);
@@ -15,21 +17,22 @@ Oauth.registerService('meetup', 2, null, function(query) {
 var getAccessToken = function (query) {
   var config = ServiceConfiguration.configurations.findOne({service: 'meetup'});
   if (!config)
-    throw new ServiceConfiguration.ConfigError("Service not configured");
+    throw new ServiceConfiguration.ConfigError();
 
   var response;
   try {
-    response = Meteor.http.post(
+    response = HTTP.post(
       "https://secure.meetup.com/oauth2/access", {headers: {Accept: 'application/json'}, params: {
         code: query.code,
         client_id: config.clientId,
-        client_secret: config.secret,
+        client_secret: OAuth.openSecret(config.secret),
         grant_type: 'authorization_code',
         redirect_uri: Meteor.absoluteUrl("_oauth/meetup?close"),
         state: query.state
       }});
   } catch (err) {
-    throw new Error("Failed to complete OAuth handshake with Meetup. " + err.message);
+    throw _.extend(new Error("Failed to complete OAuth handshake with Meetup. " + err.message),
+                   {response: err.response});
   }
 
   if (response.data.error) { // if the http response was a json object with an error attribute
@@ -41,16 +44,17 @@ var getAccessToken = function (query) {
 
 var getIdentity = function (accessToken) {
   try {
-    var response = Meteor.http.get(
+    var response = HTTP.get(
       "https://secure.meetup.com/2/members",
       {params: {member_id: 'self', access_token: accessToken}});
     return response.data.results && response.data.results[0];
   } catch (err) {
-    throw new Error("Failed to fetch identity from Meetup: " + err.message);
+    throw _.extend(new Error("Failed to fetch identity from Meetup. " + err.message),
+                   {response: err.response});
   }
 };
 
 
-Meetup.retrieveCredential = function(credentialToken) {
-  return Oauth.retrieveCredential(credentialToken);
+Meetup.retrieveCredential = function(credentialToken, credentialSecret) {
+  return OAuth.retrieveCredential(credentialToken, credentialSecret);
 };

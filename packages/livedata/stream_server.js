@@ -1,27 +1,29 @@
-Meteor._routePolicy.declare('/sockjs/', 'network');
+var url = Npm.require('url');
 
-// unique id for this instantiation of the server. If this changes
-// between client reconnects, the client will reload. You can set the
-// environment variable "SERVER_ID" to control this. For example, if
-// you want to only force a reload on major changes, you can use a
-// custom serverId which you only change when something worth pushing
-// to clients immediately happens.
-__meteor_runtime_config__.serverId =
-  process.env.SERVER_ID ? process.env.SERVER_ID : Random.id();
+var pathPrefix = __meteor_runtime_config__.ROOT_URL_PATH_PREFIX ||  "";
 
-Meteor._DdpStreamServer = function () {
+StreamServer = function () {
   var self = this;
   self.registration_callbacks = [];
   self.open_sockets = [];
 
+  // Because we are installing directly onto WebApp.httpServer instead of using
+  // WebApp.app, we have to process the path prefix ourselves.
+  self.prefix = pathPrefix + '/sockjs';
+  // routepolicy is only a weak dependency, because we don't need it if we're
+  // just doing server-to-server DDP as a client.
+  if (Package.routepolicy) {
+    Package.routepolicy.RoutePolicy.declare(self.prefix + '/', 'network');
+  }
+
   // set up sockjs
   var sockjs = Npm.require('sockjs');
   var serverOptions = {
-    prefix: '/sockjs',
+    prefix: self.prefix,
     log: function() {},
     // this is the default, but we code it explicitly because we depend
     // on it in stream_client:HEARTBEAT_TIMEOUT
-    heartbeat_delay: 25000,
+    heartbeat_delay: 45000,
     // The default disconnect_delay is 5 seconds, but if the server ends up CPU
     // bound for that much time, SockJS might not notice that the user has
     // reconnected because the timer (of disconnect_delay ms) can fire before
@@ -29,7 +31,10 @@ Meteor._DdpStreamServer = function () {
     // combining CPU-heavy processing with SockJS termination (eg a proxy which
     // converts to Unix sockets) but for now, raise the delay.
     disconnect_delay: 60 * 1000,
-    jsessionid: false
+    // Set the USE_JSESSIONID environment variable to enable setting the
+    // JSESSIONID cookie. This is useful for setting up proxies with
+    // session affinity.
+    jsessionid: !!process.env.USE_JSESSIONID
   };
 
   // If you know your server environment (eg, proxies) will prevent websockets
@@ -40,12 +45,39 @@ Meteor._DdpStreamServer = function () {
     serverOptions.websocket = false;
 
   self.server = sockjs.createServer(serverOptions);
-  self.server.installHandlers(__meteor_bootstrap__.httpServer);
+  if (!Package.webapp) {
+    throw new Error("Cannot create a DDP server without the webapp package");
+  }
+  // Install the sockjs handlers, but we want to keep around our own particular
+  // request handler that adjusts idle timeouts while we have an outstanding
+  // request.  This compensates for the fact that sockjs removes all listeners
+  // for "request" to add its own.
+  Package.webapp.WebApp.httpServer.removeListener('request', Package.webapp.WebApp._timeoutAdjustmentRequestCallback);
+  self.server.installHandlers(Package.webapp.WebApp.httpServer);
+  Package.webapp.WebApp.httpServer.addListener('request', Package.webapp.WebApp._timeoutAdjustmentRequestCallback);
+
+  Package.webapp.WebApp.httpServer.on('meteor-closing', function () {
+    _.each(self.open_sockets, function (socket) {
+      socket.end();
+    });
+  });
 
   // Support the /websocket endpoint
   self._redirectWebsocketEndpoint();
 
   self.server.on('connection', function (socket) {
+
+    if (Package.webapp.WebAppInternals.usingDdpProxy) {
+      // If we are behind a DDP proxy, immediately close any sockjs connections
+      // that are not using websockets; the proxy will terminate sockjs for us,
+      // so we don't expect to be handling any other transports.
+      if (socket.protocol !== "websocket" &&
+          socket.protocol !== "websocket-raw") {
+        socket.close();
+        return;
+      }
+    }
+
     socket.send = function (data) {
       socket.write(data);
     };
@@ -54,10 +86,12 @@ Meteor._DdpStreamServer = function () {
     });
     self.open_sockets.push(socket);
 
-
-    // Send a welcome message with the serverId. Client uses this to
-    // reload if needed.
-    socket.send(JSON.stringify({server_id: __meteor_runtime_config__.serverId}));
+    // XXX COMPAT WITH 0.6.6. Send the old style welcome message, which
+    // will force old clients to reload. Remove this once we're not
+    // concerned about people upgrading from a pre-0.7.0 release. Also,
+    // remove the clause in the client that ignores the welcome message
+    // (livedata_connection.js)
+    socket.send(JSON.stringify({server_id: "0"}));
 
     // call all our callbacks when we get a new socket. they will do the
     // work of setting up handlers and such for specific messages.
@@ -68,7 +102,7 @@ Meteor._DdpStreamServer = function () {
 
 };
 
-_.extend(Meteor._DdpStreamServer.prototype, {
+_.extend(StreamServer.prototype, {
   // call my callback when a new socket connects.
   // also call it for all current connections.
   register: function (callback) {
@@ -88,13 +122,14 @@ _.extend(Meteor._DdpStreamServer.prototype, {
   // Redirect /websocket to /sockjs/websocket in order to not expose
   // sockjs to clients that want to use raw websockets
   _redirectWebsocketEndpoint: function() {
+    var self = this;
     // Unfortunately we can't use a connect middleware here since
     // sockjs installs itself prior to all existing listeners
     // (meaning prior to any connect middlewares) so we need to take
     // an approach similar to overshadowListeners in
     // https://github.com/sockjs/sockjs-node/blob/cf820c55af6a9953e16558555a31decea554f70e/src/utils.coffee
     _.each(['request', 'upgrade'], function(event) {
-      var httpServer = __meteor_bootstrap__.httpServer;
+      var httpServer = Package.webapp.WebApp.httpServer;
       var oldHttpServerListeners = httpServer.listeners(event).slice(0);
       httpServer.removeAllListeners(event);
 
@@ -104,10 +139,14 @@ _.extend(Meteor._DdpStreamServer.prototype, {
         // Store arguments for use within the closure below
         var args = arguments;
 
-        if (request.url === '/websocket' ||
-            request.url === '/websocket/')
-          request.url = '/sockjs/websocket';
-
+        // Rewrite /websocket and /websocket/ urls to /sockjs/websocket while
+        // preserving query string.
+        var parsedUrl = url.parse(request.url);
+        if (parsedUrl.pathname === pathPrefix + '/websocket' ||
+            parsedUrl.pathname === pathPrefix + '/websocket/') {
+          parsedUrl.pathname = self.prefix + '/websocket';
+          request.url = url.format(parsedUrl);
+        }
         _.each(oldHttpServerListeners, function(oldListener) {
           oldListener.apply(httpServer, args);
         });

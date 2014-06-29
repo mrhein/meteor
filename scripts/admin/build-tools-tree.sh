@@ -8,7 +8,7 @@
 set -e
 set -u
 
-cd `dirname $0`/../..
+cd "`dirname "$0"`"/../..
 
 if [ "$TARGET_DIR" == "" ] ; then
     echo 'Must set $TARGET_DIR'
@@ -44,8 +44,7 @@ CPR examples "$TARGET_DIR"
 # Script is not actually used, but it's nice to distribute it for users.
 cp scripts/admin/launch-meteor "$TARGET_DIR"
 
-# Trim tests and unfinished examples.
-rm -rf "$TARGET_DIR"/tools/tests
+# Trim unfinished examples.
 rm -rf "$TARGET_DIR"/examples/unfinished
 rm -rf "$TARGET_DIR"/examples/other
 

@@ -4,8 +4,8 @@ var loginButtonsSession = Accounts._loginButtonsSession;
 
 //
 // populate the session so that the appropriate dialogs are
-// displayed by reading variables set by accounts-urls, which parses
-// special URLs. since accounts-ui depends on accounts-urls, we are
+// displayed by reading variables set by accounts-base, which parses
+// special URLs. since accounts-ui depends on accounts-base, we are
 // guaranteed to have these set at this point.
 //
 
@@ -53,7 +53,7 @@ Template._resetPasswordDialog.events({
 var resetPassword = function () {
   loginButtonsSession.resetMessages();
   var newPassword = document.getElementById('reset-password-new-password').value;
-  if (!Accounts._loginButtons.validatePassword(newPassword))
+  if (!validatePassword(newPassword))
     return;
 
   Accounts.resetPassword(
@@ -63,6 +63,7 @@ var resetPassword = function () {
         loginButtonsSession.errorMessage(error.reason || "Unknown error");
       } else {
         loginButtonsSession.set('resetPasswordToken', null);
+        loginButtonsSession.set('justResetPassword', true);
         Accounts._enableAutoLogin();
       }
     });
@@ -71,6 +72,23 @@ var resetPassword = function () {
 Template._resetPasswordDialog.inResetPasswordFlow = function () {
   return loginButtonsSession.get('resetPasswordToken');
 };
+
+//
+// justResetPasswordDialog template
+//
+
+Template._justResetPasswordDialog.events({
+  'click #just-verified-dismiss-button': function () {
+    loginButtonsSession.set('justResetPassword', false);
+  }
+});
+
+Template._justResetPasswordDialog.visible = function () {
+  return loginButtonsSession.get('justResetPassword');
+};
+
+Template._justResetPasswordDialog.displayName = displayName;
+
 
 
 //
@@ -94,7 +112,7 @@ Template._enrollAccountDialog.events({
 var enrollAccount = function () {
   loginButtonsSession.resetMessages();
   var password = document.getElementById('enroll-account-password').value;
-  if (!Accounts._loginButtons.validatePassword(password))
+  if (!validatePassword(password))
     return;
 
   Accounts.resetPassword(
@@ -128,6 +146,8 @@ Template._justVerifiedEmailDialog.visible = function () {
   return loginButtonsSession.get('justVerifiedEmail');
 };
 
+Template._justVerifiedEmailDialog.displayName = displayName;
+
 
 //
 // loginButtonsMessagesDialog template
@@ -141,7 +161,7 @@ Template._loginButtonsMessagesDialog.events({
 
 Template._loginButtonsMessagesDialog.visible = function () {
   var hasMessage = loginButtonsSession.get('infoMessage') || loginButtonsSession.get('errorMessage');
-  return !Accounts._loginButtons.dropdown() && hasMessage;
+  return !dropdown() && hasMessage;
 };
 
 
@@ -166,16 +186,19 @@ Template._configureLoginServiceDialog.events({
       _.each(configurationFields(), function(field) {
         configuration[field.property] = document.getElementById(
           'configure-login-service-dialog-' + field.property).value
-          .replace(/^\s*|\s*$/g, ""); // trim;
+          .replace(/^\s*|\s*$/g, ""); // trim() doesnt work on IE8;
       });
 
       // Configure this login service
-      Meteor.call("configureLoginService", configuration, function (error, result) {
-        if (error)
-          Meteor._debug("Error configuring login service " + serviceName, error);
-        else
-          loginButtonsSession.set('configureLoginServiceDialogVisible', false);
-      });
+      Accounts.connection.call(
+        "configureLoginService", configuration, function (error, result) {
+          if (error)
+            Meteor._debug("Error configuring login service " + serviceName,
+                          error);
+          else
+            loginButtonsSession.set('configureLoginServiceDialogVisible',
+                                    false);
+        });
     }
   },
   // IE8 doesn't support the 'input' event, so we'll run this on the keyup as
@@ -205,7 +228,12 @@ var updateSaveDisabled = function () {
 // template should be defined in the service's package
 var configureLoginServiceDialogTemplateForService = function () {
   var serviceName = loginButtonsSession.get('configureLoginServiceDialogServiceName');
-  return Template['configureLoginServiceDialogFor' + capitalize(serviceName)];
+  // XXX Service providers should be able to specify their configuration
+  // template name.
+  return Template['configureLoginServiceDialogFor' +
+                  (serviceName === 'meteor-developer' ?
+                   'MeteorDeveloper' :
+                   capitalize(serviceName))];
 };
 
 var configurationFields = function () {
@@ -223,7 +251,7 @@ Template._configureLoginServiceDialog.visible = function () {
 
 Template._configureLoginServiceDialog.configurationSteps = function () {
   // renders the appropriate template
-  return configureLoginServiceDialogTemplateForService()();
+  return configureLoginServiceDialogTemplateForService();
 };
 
 Template._configureLoginServiceDialog.saveDisabled = function () {

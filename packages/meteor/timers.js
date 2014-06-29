@@ -1,18 +1,16 @@
 var withoutInvocation = function (f) {
-  if (Meteor._CurrentInvocation) {
-    if (Meteor._CurrentInvocation.get() && Meteor._CurrentInvocation.get().isSimulation)
+  if (Package.livedata) {
+    var _CurrentInvocation = Package.livedata.DDP._CurrentInvocation;
+    if (_CurrentInvocation.get() && _CurrentInvocation.get().isSimulation)
       throw new Error("Can't set timers inside simulations");
-    return function () { Meteor._CurrentInvocation.withValue(null, f); };
+    return function () { _CurrentInvocation.withValue(null, f); };
   }
   else
     return f;
 };
 
 var bindAndCatch = function (context, f) {
-  return Meteor.bindEnvironment(withoutInvocation(f), function (e) {
-    // XXX report nicely (or, should we catch it at all?)
-    Meteor._debug("Exception from " + context + ":", e);
-  });
+  return Meteor.bindEnvironment(withoutInvocation(f), context);
 };
 
 _.extend(Meteor, {

@@ -3,20 +3,27 @@
 // the string "intercept", storing them in an array that can then
 // be retrieved using the getInterceptedEmails method
 //
-var oldEmailSend = Email.send;
-var interceptedEmails = {}; // (email address) -> (array of contents)
+var interceptedEmails = {}; // (email address) -> (array of options)
 
-Email.send = function (options) {
+// add html email templates that just contain the url
+Accounts.emailTemplates.resetPassword.html = 
+  Accounts.emailTemplates.enrollAccount.html =
+  Accounts.emailTemplates.verifyEmail.html = function (user, url) {
+    return url;
+  };
+
+EmailTest.hookSend(function (options) {
   var to = options.to;
   if (to.indexOf('intercept') === -1) {
-    oldEmailSend(options);
+    return true; // go ahead and send
   } else {
     if (!interceptedEmails[to])
       interceptedEmails[to] = [];
 
-    interceptedEmails[to].push(options.text);
+    interceptedEmails[to].push(options);
+    return false; // skip sending
   }
-};
+});
 
 Meteor.methods({
   getInterceptedEmails: function (email) {

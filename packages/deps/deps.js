@@ -1,5 +1,13 @@
+//////////////////////////////////////////////////
+// Package docs at http://docs.meteor.com/#deps //
+//////////////////////////////////////////////////
+
 Deps = {};
+
+// http://docs.meteor.com/#deps_active
 Deps.active = false;
+
+// http://docs.meteor.com/#deps_currentcomputation
 Deps.currentComputation = null;
 
 var setCurrentComputation = function (c) {
@@ -7,11 +15,51 @@ var setCurrentComputation = function (c) {
   Deps.active = !! c;
 };
 
+// _assign is like _.extend or the upcoming Object.assign.
+// Copy src's own, enumerable properties onto tgt and return
+// tgt.
+var _hasOwnProperty = Object.prototype.hasOwnProperty;
+var _assign = function (tgt, src) {
+  for (var k in src) {
+    if (_hasOwnProperty.call(src, k))
+      tgt[k] = src[k];
+  }
+  return tgt;
+};
+
 var _debugFunc = function () {
   // lazy evaluation because `Meteor` does not exist right away
   return (typeof Meteor !== "undefined" ? Meteor._debug :
-          ((typeof console !== "undefined") && console.log ? console.log :
+          ((typeof console !== "undefined") && console.log ?
+           function () { console.log.apply(console, arguments); } :
            function () {}));
+};
+
+var _throwOrLog = function (from, e) {
+  if (throwFirstError) {
+    throw e;
+  } else {
+    _debugFunc()("Exception from Deps " + from + " function:",
+                 e.stack || e.message);
+  }
+};
+
+// Takes a function `f`, and wraps it in a `Meteor._noYieldsAllowed`
+// block if we are running on the server. On the client, returns the
+// original function (since `Meteor._noYieldsAllowed` is a
+// no-op). This has the benefit of not adding an unnecessary stack
+// frame on the client.
+var withNoYieldsAllowed = function (f) {
+  if ((typeof Meteor === 'undefined') || Meteor.isClient) {
+    return f;
+  } else {
+    return function () {
+      var args = arguments;
+      Meteor._noYieldsAllowed(function () {
+        f.apply(null, args);
+      });
+    };
+  }
 };
 
 var nextId = 1;
@@ -26,6 +74,12 @@ var inFlush = false;
 // Deps.nonreactive, which nullfies currentComputation even though
 // an enclosing computation may still be running.
 var inCompute = false;
+// `true` if the `_throwFirstError` option was passed in to the call
+// to Deps.flush that we are in. When set, throw rather than log the
+// first error encountered while flushing. Before throwing the error,
+// finish flushing (from a finally block), logging any subsequent
+// errors.
+var throwFirstError = false;
 
 var afterFlushCallbacks = [];
 
@@ -40,6 +94,9 @@ var requireFlush = function () {
 // (throws an error if you try to call it)
 var constructingComputation = false;
 
+//
+// http://docs.meteor.com/#deps_computation
+//
 Deps.Computation = function (f, parent) {
   if (! constructingComputation)
     throw new Error(
@@ -47,8 +104,14 @@ Deps.Computation = function (f, parent) {
   constructingComputation = false;
 
   var self = this;
+
+  // http://docs.meteor.com/#computation_stopped
   self.stopped = false;
+
+  // http://docs.meteor.com/#computation_invalidated
   self.invalidated = false;
+
+  // http://docs.meteor.com/#computation_firstrun
   self.firstRun = true;
 
   self._id = nextId++;
@@ -70,26 +133,25 @@ Deps.Computation = function (f, parent) {
   }
 };
 
-_.extend(Deps.Computation.prototype, {
+_assign(Deps.Computation.prototype, {
 
+  // http://docs.meteor.com/#computation_oninvalidate
   onInvalidate: function (f) {
     var self = this;
 
     if (typeof f !== 'function')
       throw new Error("onInvalidate requires a function");
 
-    var g = function () {
+    if (self.invalidated) {
       Deps.nonreactive(function () {
-        f(self);
+        withNoYieldsAllowed(f)(self);
       });
-    };
-
-    if (self.invalidated)
-      g();
-    else
-      self._onInvalidateCallbacks.push(g);
+    } else {
+      self._onInvalidateCallbacks.push(f);
+    }
   },
 
+  // http://docs.meteor.com/#computation_invalidate
   invalidate: function () {
     var self = this;
     if (! self.invalidated) {
@@ -104,12 +166,16 @@ _.extend(Deps.Computation.prototype, {
 
       // callbacks can't add callbacks, because
       // self.invalidated === true.
-      for(var i = 0, f; f = self._onInvalidateCallbacks[i]; i++)
-        f(); // already bound with self as argument
+      for(var i = 0, f; f = self._onInvalidateCallbacks[i]; i++) {
+        Deps.nonreactive(function () {
+          withNoYieldsAllowed(f)(self);
+        });
+      }
       self._onInvalidateCallbacks = [];
     }
   },
 
+  // http://docs.meteor.com/#computation_stop
   stop: function () {
     if (! this.stopped) {
       this.stopped = true;
@@ -126,7 +192,7 @@ _.extend(Deps.Computation.prototype, {
     var previousInCompute = inCompute;
     inCompute = true;
     try {
-      self._func(self);
+      withNoYieldsAllowed(self._func)(self);
     } finally {
       setCurrentComputation(previous);
       inCompute = false;
@@ -137,28 +203,36 @@ _.extend(Deps.Computation.prototype, {
     var self = this;
 
     self._recomputing = true;
-    while (self.invalidated && ! self.stopped) {
-      try {
-        self._compute();
-      } catch (e) {
-        _debugFunc()("Exception from Deps recompute:", e.stack || e.message);
+    try {
+      while (self.invalidated && ! self.stopped) {
+        try {
+          self._compute();
+        } catch (e) {
+          _throwOrLog("recompute", e);
+        }
+        // If _compute() invalidated us, we run again immediately.
+        // A computation that invalidates itself indefinitely is an
+        // infinite loop, of course.
+        //
+        // We could put an iteration counter here and catch run-away
+        // loops.
       }
-      // If _compute() invalidated us, we run again immediately.
-      // A computation that invalidates itself indefinitely is an
-      // infinite loop, of course.
-      //
-      // We could put an iteration counter here and catch run-away
-      // loops.
+    } finally {
+      self._recomputing = false;
     }
-    self._recomputing = false;
   }
 });
 
+//
+// http://docs.meteor.com/#deps_dependency
+//
 Deps.Dependency = function () {
   this._dependentsById = {};
 };
 
-_.extend(Deps.Dependency.prototype, {
+_assign(Deps.Dependency.prototype, {
+  // http://docs.meteor.com/#dependency_depend
+  //
   // Adds `computation` to this set if it is not already
   // present.  Returns true if `computation` is a new member of the set.
   // If no argument, defaults to currentComputation, or does nothing
@@ -181,11 +255,15 @@ _.extend(Deps.Dependency.prototype, {
     }
     return false;
   },
+
+  // http://docs.meteor.com/#dependency_changed
   changed: function () {
     var self = this;
     for (var id in self._dependentsById)
       self._dependentsById[id].invalidate();
   },
+
+  // http://docs.meteor.com/#dependency_hasdependents
   hasDependents: function () {
     var self = this;
     for(var id in self._dependentsById)
@@ -194,8 +272,12 @@ _.extend(Deps.Dependency.prototype, {
   }
 });
 
-_.extend(Deps, {
-  flush: function () {
+_assign(Deps, {
+  // http://docs.meteor.com/#deps_flush
+  flush: function (_opts) {
+    // XXX What part of the comment below is still true? (We no longer
+    // have Spark)
+    //
     // Nested flush could plausibly happen if, say, a flush causes
     // DOM mutation, which causes a "blur" event, which runs an
     // app event handler that calls Deps.flush.  At the moment
@@ -212,34 +294,44 @@ _.extend(Deps, {
 
     inFlush = true;
     willFlush = true;
+    throwFirstError = !! (_opts && _opts._throwFirstError);
 
-    while (pendingComputations.length ||
-           afterFlushCallbacks.length) {
+    var finishedTry = false;
+    try {
+      while (pendingComputations.length ||
+             afterFlushCallbacks.length) {
 
-      // recompute all pending computations
-      var comps = pendingComputations;
-      pendingComputations = [];
+        // recompute all pending computations
+        while (pendingComputations.length) {
+          var comp = pendingComputations.shift();
+          comp._recompute();
+        }
 
-      for (var i = 0, comp; comp = comps[i]; i++)
-        comp._recompute();
-
-      if (afterFlushCallbacks.length) {
-        // call one afterFlush callback, which may
-        // invalidate more computations
-        var func = afterFlushCallbacks.shift();
-        try {
-          func();
-        } catch (e) {
-          _debugFunc()("Exception from Deps afterFlush function:",
-                       e.stack || e.message);
+        if (afterFlushCallbacks.length) {
+          // call one afterFlush callback, which may
+          // invalidate more computations
+          var func = afterFlushCallbacks.shift();
+          try {
+            func();
+          } catch (e) {
+            _throwOrLog("afterFlush function", e);
+          }
         }
       }
+      finishedTry = true;
+    } finally {
+      if (! finishedTry) {
+        // we're erroring
+        inFlush = false; // needed before calling `Deps.flush()` again
+        Deps.flush({_throwFirstError: false}); // finish flushing
+      }
+      willFlush = false;
+      inFlush = false;
     }
-
-    inFlush = false;
-    willFlush = false;
   },
 
+  // http://docs.meteor.com/#deps_autorun
+  //
   // Run f(). Record its dependencies. Rerun it whenever the
   // dependencies change.
   //
@@ -262,6 +354,8 @@ _.extend(Deps, {
     return c;
   },
 
+  // http://docs.meteor.com/#deps_nonreactive
+  //
   // Run `f` with no current computation, returning the return value
   // of `f`.  Used to turn off reactivity for the duration of `f`,
   // so that reactive data sources accessed by `f` will not result in any
@@ -276,23 +370,7 @@ _.extend(Deps, {
     }
   },
 
-  // Wrap `f` so that it is always run nonreactively.
-  _makeNonreactive: function (f) {
-    if (f.$isNonreactive) // avoid multiple layers of wrapping.
-      return f;
-    var nonreactiveVersion = function (/*arguments*/) {
-      var self = this;
-      var args = _.toArray(arguments);
-      var ret;
-      Deps.nonreactive(function () {
-        ret = f.apply(self, args);
-      });
-      return ret;
-    };
-    nonreactiveVersion.$isNonreactive = true;
-    return nonreactiveVersion;
-  },
-
+  // http://docs.meteor.com/#deps_oninvalidate
   onInvalidate: function (f) {
     if (! Deps.active)
       throw new Error("Deps.onInvalidate requires a currentComputation");
@@ -300,6 +378,7 @@ _.extend(Deps, {
     Deps.currentComputation.onInvalidate(f);
   },
 
+  // http://docs.meteor.com/#deps_afterflush
   afterFlush: function (f) {
     afterFlushCallbacks.push(f);
     requireFlush();

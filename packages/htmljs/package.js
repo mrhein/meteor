@@ -1,14 +1,18 @@
 Package.describe({
-  summary: "Easy macros for generating DOM elements in Javascript"
+  summary: "Small library for expressing HTML trees",
+  internal: true
 });
 
 Package.on_use(function (api) {
-  // Note: html.js will optionally use jquery if it's available
-  api.add_files('html.js', 'client');
+  api.export('HTML');
+
+  api.add_files(['utils.js', 'html.js', 'tohtml.js']);
 });
 
 Package.on_test(function (api) {
-  api.use('htmljs', 'client');
+  api.use('htmljs');
+  api.use('html-tools');
   api.use('tinytest');
-  api.add_files('htmljs_test.js', 'client');
+  api.use('underscore');
+  api.add_files(['htmljs_test.js']);
 });

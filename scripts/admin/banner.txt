@@ -1,5 +1,7 @@
-=> Meteor 0.6.4 released: New OAuth packages and recommended updates. See
-   https://github.com/meteor/meteor/blob/devel/History.md for details.
+=> Meteor 0.8.2: Switch `accounts-password` to use bcrypt on the
+   server. User accounts will seamlessly transition to bcrypt on the
+   next login, but this transition is one-way, so you cannot downgrade a
+   production app once you upgrade to 0.8.2.
 
-   This is being downloaded in the background. Update your project
-   to Meteor 0.6.4 by running 'meteor update'.
+   This release is being downloaded in the background. Update your
+   project to Meteor 0.8.2 by running 'meteor update'.

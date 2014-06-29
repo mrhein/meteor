@@ -12,6 +12,7 @@ if [ "$UNAME" == "Linux" ] ; then
         echo "Meteor only supports i686 and x86_64 for now."
         exit 1
     fi
+
     MONGO_OS="linux"
     MAKE="make"
 
@@ -62,7 +63,7 @@ fi
 PLATFORM="${UNAME}_${ARCH}"
 
 # save off meteor checkout dir as final target
-cd `dirname $0`/..
+cd "`dirname "$0"`"/..
 TARGET_DIR=`pwd`
 
 # Read the bundle version from the meteor shell script.
@@ -84,11 +85,12 @@ umask 022
 mkdir build
 cd build
 
-git clone git://github.com/joyent/node.git
+git clone https://github.com/joyent/node.git
 cd node
 # When upgrading node versions, also update the values of MIN_NODE_VERSION at
-# the top of app/meteor/meteor.js and app/server/server.js.
-git checkout v0.8.18
+# the top of tools/meteor.js and tools/server/boot.js, and the text in
+# docs/client/concepts.html and the README in tools/bundler.js.
+git checkout v0.10.28
 
 ./configure --prefix="$DIR"
 $MAKE -j4
@@ -109,34 +111,34 @@ which npm
 # you update version numbers.
 
 cd "$DIR/lib/node_modules"
-npm install connect@2.7.10
-npm install optimist@0.3.5
-npm install semver@1.1.0
-npm install handlebars@1.0.7
-npm install clean-css@0.8.3
-npm install useragent@2.0.1
-npm install request@2.12.0
-npm install keypress@0.1.0
-npm install http-proxy@0.10.1  # not 0.10.2, which contains a sketchy websocket change
-npm install underscore@1.4.4
-npm install fstream@0.1.21
-npm install tar@0.1.14
-npm install kexec@0.1.1
-npm install shell-quote@0.0.1
+npm install semver@2.2.1
+npm install request@2.33.0
+npm install keypress@0.2.1
+npm install underscore@1.5.2
+npm install fstream@0.1.25
+npm install tar@0.1.19
+npm install kexec@0.2.0
+npm install source-map@0.1.32
+npm install source-map-support@0.2.5
+npm install bcrypt@0.7.7
+npm install node-aes-gcm@0.1.3
+npm install heapdump@0.2.5
 
-# uglify-js has a bug which drops 'undefined' in arrays:
-# https://github.com/mishoo/UglifyJS2/pull/97
-npm install https://github.com/meteor/UglifyJS2/tarball/aa5abd14d3
+# Fork of 1.0.2 with https://github.com/nodejitsu/node-http-proxy/pull/592
+npm install https://github.com/meteor/node-http-proxy/tarball/99f757251b42aeb5d26535a7363c96804ee057f0
 
-# progress 0.1.0 has a regression where it opens stdin and thus does not
-# allow the node process to exit cleanly. See
-# https://github.com/visionmedia/node-progress/issues/19
-npm install progress@0.0.5
+# Using the unreleased 1.1 branch. We can probably switch to a built NPM version
+# when it gets released.
+npm install https://github.com/ariya/esprima/tarball/5044b87f94fb802d9609f1426c838874ec2007b3
+
+# 2.4.0 (more or less, the package.json change isn't committed) plus our PR
+# https://github.com/williamwicks/node-eachline/pull/4
+npm install https://github.com/meteor/node-eachline/tarball/ff89722ff94e6b6a08652bf5f44c8fffea8a21da
 
 # If you update the version of fibers in the dev bundle, also update the "npm
 # install" command in docs/client/concepts.html and in the README in
-# app/lib/bundler.js.
-npm install fibers@1.0.0
+# tools/bundler.js.
+npm install fibers@1.0.1
 # Fibers ships with compiled versions of its C code for a dozen platforms. This
 # bloats our dev bundle, and confuses dpkg-buildpackage and rpmbuild into
 # thinking that the packages need to depend on both 32- and 64-bit versions of
@@ -149,11 +151,30 @@ rm -rf *
 mv ../$FIBERS_ARCH .
 cd ../..
 
+# Checkout and build mongodb.
+# We want to build a binary that includes SSL support but does not depend on a
+# particular version of openssl on the host system.
 
-# Download and install mongodb.
+cd "$DIR/build"
+OPENSSL="openssl-1.0.1g"
+OPENSSL_URL="http://www.openssl.org/source/$OPENSSL.tar.gz"
+wget $OPENSSL_URL || curl -O $OPENSSL_URL
+tar xzf $OPENSSL.tar.gz
+
+cd $OPENSSL
+if [ "$UNAME" == "Linux" ]; then
+    ./config --prefix="$DIR/build/openssl-out" no-shared
+else
+    # This configuration line is taken from Homebrew formula:
+    # https://github.com/mxcl/homebrew/blob/master/Library/Formula/openssl.rb
+    ./Configure no-shared zlib-dynamic --prefix="$DIR/build/openssl-out" darwin64-x86_64-cc enable-ec_nistp_64_gcc_128
+fi
+make install
+
 # To see the mongo changelog, go to http://www.mongodb.org/downloads,
 # click 'changelog' under the current version, then 'release notes' in
 # the upper right.
+<<<<<<< HEAD
 cd "$DIR"
 if [ "$MONGO_OS" != "freebsd" ] ; then
     MONGO_VERSION="2.4.3"
@@ -190,7 +211,46 @@ fi
 cd mongodb/bin
 rm bsondump mongodump mongoexport mongofiles mongoimport mongorestore mongos mongosniff mongostat mongotop mongooplog mongoperf
 cd ../..
+=======
+cd "$DIR/build"
+MONGO_VERSION="2.4.9"
 
+# We use Meteor fork since we added some changes to the building script.
+# Our patches allow us to link most of the libraries statically.
+git clone git://github.com/meteor/mongo.git
+cd mongo
+git checkout ssl-r$MONGO_VERSION
+
+# Compile
+
+MONGO_FLAGS="--ssl --release -j4 "
+MONGO_FLAGS+="--cpppath=$DIR/build/openssl-out/include --libpath=$DIR/build/openssl-out/lib "
+
+if [ "$MONGO_OS" == "osx" ]; then
+    # NOTE: '--64' option breaks the compilation, even it is on by default on x64 mac: https://jira.mongodb.org/browse/SERVER-5575
+    MONGO_FLAGS+="--openssl=$DIR/build/openssl-out/lib "
+    /usr/local/bin/scons $MONGO_FLAGS mongo mongod
+elif [ "$MONGO_OS" == "linux" ]; then
+    MONGO_FLAGS+="--no-glibc-check --prefix=./ "
+    if [ "$ARCH" == "x86_64" ]; then
+      MONGO_FLAGS+="--64"
+    fi
+    scons $MONGO_FLAGS mongo mongod
+else
+    echo "We don't know how to compile mongo for this platform"
+    exit 1
+fi
+>>>>>>> upstream/master
+
+# Copy binaries
+mkdir -p "$DIR/mongodb/bin"
+cp mongo "$DIR/mongodb/bin/"
+cp mongod "$DIR/mongodb/bin/"
+
+# Copy mongodb distribution information
+find ./distsrc -maxdepth 1 -type f -exec cp '{}' ../mongodb \;
+
+cd "$DIR"
 stripBinary bin/node
 stripBinary mongodb/bin/mongo
 stripBinary mongodb/bin/mongod

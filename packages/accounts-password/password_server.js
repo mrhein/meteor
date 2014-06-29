@@ -1,3 +1,78 @@
+/// BCRYPT
+
+var bcrypt = Npm.require('bcrypt');
+var bcryptHash = Meteor._wrapAsync(bcrypt.hash);
+var bcryptCompare = Meteor._wrapAsync(bcrypt.compare);
+
+// User records have a 'services.password.bcrypt' field on them to hold
+// their hashed passwords (unless they have a 'services.password.srp'
+// field, in which case they will be upgraded to bcrypt the next time
+// they log in).
+//
+// When the client sends a password to the server, it can either be a
+// string (the plaintext password) or an object with keys 'digest' and
+// 'algorithm' (must be "sha-256" for now). The Meteor client always sends
+// password objects { digest: *, algorithm: "sha-256" }, but DDP clients
+// that don't have access to SHA can just send plaintext passwords as
+// strings.
+//
+// When the server receives a plaintext password as a string, it always
+// hashes it with SHA256 before passing it into bcrypt. When the server
+// receives a password as an object, it asserts that the algorithm is
+// "sha-256" and then passes the digest to bcrypt.
+
+
+Accounts._bcryptRounds = 10;
+
+// Given a 'password' from the client, extract the string that we should
+// bcrypt. 'password' can be one of:
+//  - String (the plaintext password)
+//  - Object with 'digest' and 'algorithm' keys. 'algorithm' must be "sha-256".
+//
+var getPasswordString = function (password) {
+  if (typeof password === "string") {
+    password = SHA256(password);
+  } else { // 'password' is an object
+    if (password.algorithm !== "sha-256") {
+      throw new Error("Invalid password hash algorithm. " +
+                      "Only 'sha-256' is allowed.");
+    }
+    password = password.digest;
+  }
+  return password;
+};
+
+// Use bcrypt to hash the password for storage in the database.
+// `password` can be a string (in which case it will be run through
+// SHA256 before bcrypt) or an object with properties `digest` and
+// `algorithm` (in which case we bcrypt `password.digest`).
+//
+var hashPassword = function (password) {
+  password = getPasswordString(password);
+  return bcryptHash(password, Accounts._bcryptRounds);
+};
+
+// Check whether the provided password matches the bcrypt'ed password in
+// the database user record. `password` can be a string (in which case
+// it will be run through SHA256 before bcrypt) or an object with
+// properties `digest` and `algorithm` (in which case we bcrypt
+// `password.digest`).
+//
+Accounts._checkPassword = function (user, password) {
+  var result = {
+    userId: user._id
+  };
+
+  password = getPasswordString(password);
+
+  if (! bcryptCompare(password, user.services.password.bcrypt)) {
+    result.error = new Meteor.Error(403, "Incorrect password");
+  }
+
+  return result;
+};
+var checkPassword = Accounts._checkPassword;
+
 ///
 /// LOGIN
 ///
@@ -16,122 +91,161 @@ var selectorFromUserQuery = function (user) {
   throw new Error("shouldn't happen (validation missed something)");
 };
 
+var findUserFromUserQuery = function (user) {
+  var selector = selectorFromUserQuery(user);
+
+  var user = Meteor.users.findOne(selector);
+  if (!user)
+    throw new Meteor.Error(403, "User not found");
+
+  return user;
+};
+
+// XXX maybe this belongs in the check package
+var NonEmptyString = Match.Where(function (x) {
+  check(x, String);
+  return x.length > 0;
+});
+
 var userQueryValidator = Match.Where(function (user) {
   check(user, {
-    id: Match.Optional(String),
-    username: Match.Optional(String),
-    email: Match.Optional(String)
+    id: Match.Optional(NonEmptyString),
+    username: Match.Optional(NonEmptyString),
+    email: Match.Optional(NonEmptyString)
   });
   if (_.keys(user).length !== 1)
     throw new Match.Error("User property must have exactly one field");
   return true;
 });
 
-// Step 1 of SRP password exchange. This puts an `M` value in the
-// session data for this connection. If a client later sends the same
-// `M` value to a method on this connection, it proves they know the
-// password for this user. We can then prove we know the password to
-// them by sending our `HAMK` value.
-//
-// @param request {Object} with fields:
-//   user: either {username: (username)}, {email: (email)}, or {id: (userId)}
-//   A: hex encoded int. the client's public key for this exchange
-// @returns {Object} with fields:
-//   identity: random string ID
-//   salt: random string ID
-//   B: hex encoded int. server's public key for this exchange
-Meteor.methods({beginPasswordExchange: function (request) {
-  check(request, {
-    user: userQueryValidator,
-    A: String
-  });
-  var selector = selectorFromUserQuery(request.user);
+var passwordValidator = Match.OneOf(
+  String,
+  { digest: String, algorithm: String }
+);
 
-  var user = Meteor.users.findOne(selector);
-  if (!user)
-    throw new Meteor.Error(403, "User not found");
+// Handler to login with a password.
+//
+// The Meteor client sets options.password to an object with keys
+// 'digest' (set to SHA256(password)) and 'algorithm' ("sha-256").
+//
+// For other DDP clients which don't have access to SHA, the handler
+// also accepts the plaintext password in options.password as a string.
+//
+// (It might be nice if servers could turn the plaintext password
+// option off. Or maybe it should be opt-in, not opt-out?
+// Accounts.config option?)
+//
+// Note that neither password option is secure without SSL.
+//
+Accounts.registerLoginHandler("password", function (options) {
+  if (! options.password || options.srp)
+    return undefined; // don't handle
+
+  check(options, {
+    user: userQueryValidator,
+    password: passwordValidator
+  });
+
+
+  var user = findUserFromUserQuery(options.user);
 
   if (!user.services || !user.services.password ||
-      !user.services.password.srp)
+      !(user.services.password.bcrypt || user.services.password.srp))
     throw new Meteor.Error(403, "User has no password set");
 
-  var verifier = user.services.password.srp;
-  var srp = new Meteor._srp.Server(verifier);
-  var challenge = srp.issueChallenge({A: request.A});
+  if (!user.services.password.bcrypt) {
+    if (typeof options.password === "string") {
+      // The client has presented a plaintext password, and the user is
+      // not upgraded to bcrypt yet. We don't attempt to tell the client
+      // to upgrade to bcrypt, because it might be a standalone DDP
+      // client doesn't know how to do such a thing.
+      var verifier = user.services.password.srp;
+      var newVerifier = SRP.generateVerifier(options.password, {
+        identity: verifier.identity, salt: verifier.salt});
 
-  // save off results in the current session so we can verify them
-  // later.
-  this._sessionData.srpChallenge =
-    { userId: user._id, M: srp.M, HAMK: srp.HAMK };
+      if (verifier.verifier !== newVerifier.verifier) {
+        return {
+          userId: user._id,
+          error: new Meteor.Error(403, "Incorrect password")
+        };
+      }
 
-  return challenge;
-}});
+      return {userId: user._id};
+    } else {
+      // Tell the client to use the SRP upgrade process.
+      throw new Meteor.Error(400, "old password format", EJSON.stringify({
+        format: 'srp',
+        identity: user.services.password.srp.identity
+      }));
+    }
+  }
 
-// Handler to login with password via SRP. Checks the `M` value set by
-// beginPasswordExchange.
-Accounts.registerLoginHandler(function (options) {
-  if (!options.srp)
-    return undefined; // don't handle
-  check(options.srp, {M: String});
-
-  // we're always called from within a 'login' method, so this should
-  // be safe.
-  var currentInvocation = Meteor._CurrentInvocation.get();
-  var serialized = currentInvocation._sessionData.srpChallenge;
-  if (!serialized || serialized.M !== options.srp.M)
-    throw new Meteor.Error(403, "Incorrect password");
-  // Only can use challenges once.
-  delete currentInvocation._sessionData.srpChallenge;
-
-  var userId = serialized.userId;
-  var user = Meteor.users.findOne(userId);
-  // Was the user deleted since the start of this challenge?
-  if (!user)
-    throw new Meteor.Error(403, "User not found");
-  var stampedLoginToken = Accounts._generateStampedLoginToken();
-  Meteor.users.update(
-    userId, {$push: {'services.resume.loginTokens': stampedLoginToken}});
-
-  return {token: stampedLoginToken.token, id: userId, HAMK: serialized.HAMK};
+  return checkPassword(
+    user,
+    options.password
+  );
 });
 
-// Handler to login with plaintext password.
+// Handler to login using the SRP upgrade path. To use this login
+// handler, the client must provide:
+//   - srp: H(identity + ":" + password)
+//   - password: a string or an object with properties 'digest' and 'algorithm'
 //
-// The meteor client doesn't use this, it is for other DDP clients who
-// haven't implemented SRP. Since it sends the password in plaintext
-// over the wire, it should only be run over SSL!
+// We use `options.srp` to verify that the client knows the correct
+// password without doing a full SRP flow. Once we've checked that, we
+// upgrade the user to bcrypt and remove the SRP information from the
+// user document.
 //
-// Also, it might be nice if servers could turn this off. Or maybe it
-// should be opt-in, not opt-out? Accounts.config option?
-Accounts.registerLoginHandler(function (options) {
-  if (!options.password || !options.user)
+// The client ends up using this login handler after trying the normal
+// login handler (above), which throws an error telling the client to
+// try the SRP upgrade path.
+//
+// XXX COMPAT WITH 0.8.1.3
+Accounts.registerLoginHandler("password", function (options) {
+  if (!options.srp || !options.password)
     return undefined; // don't handle
 
-  check(options, {user: userQueryValidator, password: String});
+  check(options, {
+    user: userQueryValidator,
+    srp: String,
+    password: passwordValidator
+  });
 
-  var selector = selectorFromUserQuery(options.user);
-  var user = Meteor.users.findOne(selector);
-  if (!user)
-    throw new Meteor.Error(403, "User not found");
+  var user = findUserFromUserQuery(options.user);
 
-  if (!user.services || !user.services.password ||
-      !user.services.password.srp)
+  // Check to see if another simultaneous login has already upgraded
+  // the user record to bcrypt.
+  if (user.services && user.services.password && user.services.password.bcrypt)
+    return checkPassword(user, options.password);
+
+  if (!(user.services && user.services.password && user.services.password.srp))
     throw new Meteor.Error(403, "User has no password set");
 
-  // Just check the verifier output when the same identity and salt
-  // are passed. Don't bother with a full exchange.
-  var verifier = user.services.password.srp;
-  var newVerifier = Meteor._srp.generateVerifier(options.password, {
-    identity: verifier.identity, salt: verifier.salt});
+  var v1 = user.services.password.srp.verifier;
+  var v2 = SRP.generateVerifier(
+    null,
+    {
+      hashedIdentityAndPassword: options.srp,
+      salt: user.services.password.srp.salt
+    }
+  ).verifier;
+  if (v1 !== v2)
+    return {
+      userId: user._id,
+      error: new Meteor.Error(403, "Incorrect password")
+    };
 
-  if (verifier.verifier !== newVerifier.verifier)
-    throw new Meteor.Error(403, "Incorrect password");
-
-  var stampedLoginToken = Accounts._generateStampedLoginToken();
+  // Upgrade to bcrypt on successful login.
+  var salted = hashPassword(options.password);
   Meteor.users.update(
-    user._id, {$push: {'services.resume.loginTokens': stampedLoginToken}});
+    user._id,
+    {
+      $unset: { 'services.password.srp': 1 },
+      $set: { 'services.password.bcrypt': salted }
+    }
+  );
 
-  return {token: stampedLoginToken.token, id: user._id};
+  return {userId: user._id};
 });
 
 
@@ -140,56 +254,78 @@ Accounts.registerLoginHandler(function (options) {
 ///
 
 // Let the user change their own password if they know the old
-// password. Checks the `M` value set by beginPasswordExchange.
-Meteor.methods({changePassword: function (options) {
+// password. `oldPassword` and `newPassword` should be objects with keys
+// `digest` and `algorithm` (representing the SHA256 of the password).
+//
+// XXX COMPAT WITH 0.8.1.3
+// Like the login method, if the user hasn't been upgraded from SRP to
+// bcrypt yet, then this method will throw an 'old password format'
+// error. The client should call the SRP upgrade login handler and then
+// retry this method again.
+//
+// UNLIKE the login method, there is no way to avoid getting SRP upgrade
+// errors thrown. The reasoning for this is that clients using this
+// method directly will need to be updated anyway because we no longer
+// support the SRP flow that they would have been doing to use this
+// method previously.
+Meteor.methods({changePassword: function (oldPassword, newPassword) {
+  check(oldPassword, passwordValidator);
+  check(newPassword, passwordValidator);
+
   if (!this.userId)
     throw new Meteor.Error(401, "Must be logged in");
-  check(options, {
-    // If options.M is set, it means we went through a challenge with the old
-    // password. For now, we don't allow changePassword without knowing the old
-    // password.
-    M: String,
-    srp: Match.Optional(Meteor._srp.matchVerifier),
-    password: Match.Optional(String)
-  });
 
-  var serialized = this._sessionData.srpChallenge;
-  if (!serialized || serialized.M !== options.M)
-    throw new Meteor.Error(403, "Incorrect password");
-  if (serialized.userId !== this.userId)
-    // No monkey business!
-    throw new Meteor.Error(403, "Incorrect password");
-  // Only can use challenges once.
-  delete this._sessionData.srpChallenge;
+  var user = Meteor.users.findOne(this.userId);
+  if (!user)
+    throw new Meteor.Error(403, "User not found");
 
-  var verifier = options.srp;
-  if (!verifier && options.password) {
-    verifier = Meteor._srp.generateVerifier(options.password);
+  if (!user.services || !user.services.password ||
+      (!user.services.password.bcrypt && !user.services.password.srp))
+    throw new Meteor.Error(403, "User has no password set");
+
+  if (! user.services.password.bcrypt) {
+    throw new Meteor.Error(400, "old password format", EJSON.stringify({
+      format: 'srp',
+      identity: user.services.password.srp.identity
+    }));
   }
-  if (!verifier)
-    throw new Meteor.Error(400, "Invalid verifier");
 
-  // XXX this should invalidate all login tokens other than the current one
-  // (or it should assign a new login token, replacing existing ones)
-  Meteor.users.update({_id: this.userId},
-                      {$set: {'services.password.srp': verifier}});
+  var result = checkPassword(user, oldPassword);
+  if (result.error)
+    throw result.error;
 
-  var ret = {passwordChanged: true};
-  if (serialized)
-    ret.HAMK = serialized.HAMK;
-  return ret;
+  var hashed = hashPassword(newPassword);
+
+  // It would be better if this removed ALL existing tokens and replaced
+  // the token for the current connection with a new one, but that would
+  // be tricky, so we'll settle for just replacing all tokens other than
+  // the one for the current connection.
+  var currentToken = Accounts._getLoginToken(this.connection.id);
+  Meteor.users.update(
+    { _id: this.userId },
+    {
+      $set: { 'services.password.bcrypt': hashed },
+      $pull: {
+        'services.resume.loginTokens': { hashedToken: { $ne: currentToken } }
+      }
+    }
+  );
+
+  return {passwordChanged: true};
 }});
 
 
 // Force change the users password.
-Accounts.setPassword = function (userId, newPassword) {
+Accounts.setPassword = function (userId, newPlaintextPassword) {
   var user = Meteor.users.findOne(userId);
   if (!user)
     throw new Meteor.Error(403, "User not found");
-  var newVerifier = Meteor._srp.generateVerifier(newPassword);
 
-  Meteor.users.update({_id: user._id}, {
-    $set: {'services.password.srp': newVerifier}});
+  Meteor.users.update(
+    {_id: user._id},
+    { $unset: {'services.password.srp': 1}, // XXX COMPAT WITH 0.8.1.3
+      $set: {'services.password.bcrypt': hashPassword(newPlaintextPassword)} }
+  );
 };
 
 
@@ -211,6 +347,7 @@ Meteor.methods({forgotPassword: function (options) {
 
 // send the user an email with a link that when opened allows the user
 // to set a new password, without the old password.
+//
 Accounts.sendResetPasswordEmail = function (userId, email) {
   // Make sure the user exists, and email is one of their addresses.
   var user = Meteor.users.findOne(userId);
@@ -223,22 +360,33 @@ Accounts.sendResetPasswordEmail = function (userId, email) {
   if (!email || !_.contains(_.pluck(user.emails || [], 'address'), email))
     throw new Error("No such email for user.");
 
-  var token = Random.id();
-  var when = +(new Date);
+  var token = Random.secret();
+  var when = new Date();
+  var tokenRecord = {
+    token: token,
+    email: email,
+    when: when
+  };
   Meteor.users.update(userId, {$set: {
-    "services.password.reset": {
-      token: token,
-      email: email,
-      when: when
-    }
+    "services.password.reset": tokenRecord
   }});
+  // before passing to template, update user object with new token
+  user.services.password.reset = tokenRecord;
 
   var resetPasswordUrl = Accounts.urls.resetPassword(token);
-  Email.send({
+
+  var options = {
     to: email,
     from: Accounts.emailTemplates.from,
     subject: Accounts.emailTemplates.resetPassword.subject(user),
-    text: Accounts.emailTemplates.resetPassword.text(user, resetPasswordUrl)});
+    text: Accounts.emailTemplates.resetPassword.text(user, resetPasswordUrl)
+  };
+
+  if (typeof Accounts.emailTemplates.resetPassword.html === 'function')
+    options.html =
+      Accounts.emailTemplates.resetPassword.html(user, resetPasswordUrl);
+
+  Email.send(options);
 };
 
 // send the user an email informing them that their account was created, with
@@ -246,8 +394,9 @@ Accounts.sendResetPasswordEmail = function (userId, email) {
 // to choose their password. The email must be one of the addresses in the
 // user's emails field, or undefined to pick the first email automatically.
 //
-// This is not called automatically, it must be called manually if you
+// This is not called automatically. It must be called manually if you
 // want to use enrollment emails.
+//
 Accounts.sendEnrollmentEmail = function (userId, email) {
   // XXX refactor! This is basically identical to sendResetPasswordEmail.
 
@@ -262,58 +411,106 @@ Accounts.sendEnrollmentEmail = function (userId, email) {
   if (!email || !_.contains(_.pluck(user.emails || [], 'address'), email))
     throw new Error("No such email for user.");
 
-
-  var token = Random.id();
-  var when = +(new Date);
+  var token = Random.secret();
+  var when = new Date();
+  var tokenRecord = {
+    token: token,
+    email: email,
+    when: when
+  };
   Meteor.users.update(userId, {$set: {
-    "services.password.reset": {
-      token: token,
-      email: email,
-      when: when
-    }
+    "services.password.reset": tokenRecord
   }});
 
+  // before passing to template, update user object with new token
+  Meteor._ensure(user, "services", "password");
+  user.services.password.reset = tokenRecord;
+
   var enrollAccountUrl = Accounts.urls.enrollAccount(token);
-  Email.send({
+
+  var options = {
     to: email,
     from: Accounts.emailTemplates.from,
     subject: Accounts.emailTemplates.enrollAccount.subject(user),
     text: Accounts.emailTemplates.enrollAccount.text(user, enrollAccountUrl)
-  });
+  };
+
+  if (typeof Accounts.emailTemplates.enrollAccount.html === 'function')
+    options.html =
+      Accounts.emailTemplates.enrollAccount.html(user, enrollAccountUrl);
+
+  Email.send(options);
 };
 
 
 // Take token from sendResetPasswordEmail or sendEnrollmentEmail, change
 // the users password, and log them in.
-Meteor.methods({resetPassword: function (token, newVerifier) {
-  check(token, String);
-  check(newVerifier, Meteor._srp.matchVerifier);
+Meteor.methods({resetPassword: function (token, newPassword) {
+  var self = this;
+  return Accounts._loginMethod(
+    self,
+    "resetPassword",
+    arguments,
+    "password",
+    function () {
+      check(token, String);
+      check(newPassword, passwordValidator);
 
-  var user = Meteor.users.findOne({
-    "services.password.reset.token": ""+token});
-  if (!user)
-    throw new Meteor.Error(403, "Token expired");
-  var email = user.services.password.reset.email;
-  if (!_.include(_.pluck(user.emails || [], 'address'), email))
-    throw new Meteor.Error(403, "Token has invalid email address");
+      var user = Meteor.users.findOne({
+        "services.password.reset.token": token});
+      if (!user)
+        throw new Meteor.Error(403, "Token expired");
+      var email = user.services.password.reset.email;
+      if (!_.include(_.pluck(user.emails || [], 'address'), email))
+        return {
+          userId: user._id,
+          error: new Meteor.Error(403, "Token has invalid email address")
+        };
 
-  var stampedLoginToken = Accounts._generateStampedLoginToken();
+      var hashed = hashPassword(newPassword);
 
-  // Update the user record by:
-  // - Changing the password verifier to the new one
-  // - Replacing all valid login tokens with new ones (changing
-  //   password should invalidate existing sessions).
-  // - Forgetting about the reset token that was just used
-  // - Verifying their email, since they got the password reset via email.
-  Meteor.users.update({_id: user._id, 'emails.address': email}, {
-    $set: {'services.password.srp': newVerifier,
-           'services.resume.loginTokens': [stampedLoginToken],
-           'emails.$.verified': true},
-    $unset: {'services.password.reset': 1}
-  });
+      // NOTE: We're about to invalidate tokens on the user, who we might be
+      // logged in as. Make sure to avoid logging ourselves out if this
+      // happens. But also make sure not to leave the connection in a state
+      // of having a bad token set if things fail.
+      var oldToken = Accounts._getLoginToken(self.connection.id);
+      Accounts._setLoginToken(user._id, self.connection, null);
+      var resetToOldToken = function () {
+        Accounts._setLoginToken(user._id, self.connection, oldToken);
+      };
 
-  this.setUserId(user._id);
-  return {token: stampedLoginToken.token, id: user._id};
+      try {
+        // Update the user record by:
+        // - Changing the password to the new one
+        // - Forgetting about the reset token that was just used
+        // - Verifying their email, since they got the password reset via email.
+        var affectedRecords = Meteor.users.update(
+          {
+            _id: user._id,
+            'emails.address': email,
+            'services.password.reset.token': token
+          },
+          {$set: {'services.password.bcrypt': hashed,
+                  'emails.$.verified': true},
+           $unset: {'services.password.reset': 1,
+                    'services.password.srp': 1}});
+        if (affectedRecords !== 1)
+          return {
+            userId: user._id,
+            error: new Meteor.Error(403, "Invalid email")
+          };
+      } catch (err) {
+        resetToOldToken();
+        throw err;
+      }
+
+      // Replace all valid login tokens with new ones (changing
+      // password should invalidate existing sessions).
+      Accounts._clearAllLoginTokens(user._id);
+
+      return {userId: user._id};
+    }
+  );
 }});
 
 ///
@@ -323,6 +520,7 @@ Meteor.methods({resetPassword: function (token, newVerifier) {
 
 // send the user an email with a link that when opened marks that
 // address as verified
+//
 Accounts.sendVerificationEmail = function (userId, address) {
   // XXX Also generate a link using which someone can delete this
   // account if they own said address but weren't those who created
@@ -344,62 +542,86 @@ Accounts.sendVerificationEmail = function (userId, address) {
 
 
   var tokenRecord = {
-    token: Random.id(),
+    token: Random.secret(),
     address: address,
-    when: +(new Date)};
+    when: new Date()};
   Meteor.users.update(
     {_id: userId},
     {$push: {'services.email.verificationTokens': tokenRecord}});
 
+  // before passing to template, update user object with new token
+  Meteor._ensure(user, "services", "email");
+  if (! user.services.email.verificationTokens) {
+    user.services.email.verificationTokens = [];
+  }
+  user.services.email.verificationTokens.push(tokenRecord);
+
   var verifyEmailUrl = Accounts.urls.verifyEmail(tokenRecord.token);
-  Email.send({
+
+  var options = {
     to: address,
     from: Accounts.emailTemplates.from,
     subject: Accounts.emailTemplates.verifyEmail.subject(user),
     text: Accounts.emailTemplates.verifyEmail.text(user, verifyEmailUrl)
-  });
+  };
+
+  if (typeof Accounts.emailTemplates.verifyEmail.html === 'function')
+    options.html =
+      Accounts.emailTemplates.verifyEmail.html(user, verifyEmailUrl);
+
+  Email.send(options);
 };
 
 // Take token from sendVerificationEmail, mark the email as verified,
 // and log them in.
 Meteor.methods({verifyEmail: function (token) {
-  check(token, String);
+  var self = this;
+  return Accounts._loginMethod(
+    self,
+    "verifyEmail",
+    arguments,
+    "password",
+    function () {
+      check(token, String);
 
-  var user = Meteor.users.findOne(
-    {'services.email.verificationTokens.token': token});
-  if (!user)
-    throw new Meteor.Error(403, "Verify email link expired");
+      var user = Meteor.users.findOne(
+        {'services.email.verificationTokens.token': token});
+      if (!user)
+        throw new Meteor.Error(403, "Verify email link expired");
 
-  var tokenRecord = _.find(user.services.email.verificationTokens,
-                           function (t) {
-                             return t.token == token;
-                           });
-  if (!tokenRecord)
-    throw new Meteor.Error(403, "Verify email link expired");
+      var tokenRecord = _.find(user.services.email.verificationTokens,
+                               function (t) {
+                                 return t.token == token;
+                               });
+      if (!tokenRecord)
+        return {
+          userId: user._id,
+          error: new Meteor.Error(403, "Verify email link expired")
+        };
 
-  var emailsRecord = _.find(user.emails, function (e) {
-    return e.address == tokenRecord.address;
-  });
-  if (!emailsRecord)
-    throw new Meteor.Error(403, "Verify email link is for unknown address");
+      var emailsRecord = _.find(user.emails, function (e) {
+        return e.address == tokenRecord.address;
+      });
+      if (!emailsRecord)
+        return {
+          userId: user._id,
+          error: new Meteor.Error(403, "Verify email link is for unknown address")
+        };
 
-  // Log the user in with a new login token.
-  var stampedLoginToken = Accounts._generateStampedLoginToken();
+      // By including the address in the query, we can use 'emails.$' in the
+      // modifier to get a reference to the specific object in the emails
+      // array. See
+      // http://www.mongodb.org/display/DOCS/Updating/#Updating-The%24positionaloperator)
+      // http://www.mongodb.org/display/DOCS/Updating#Updating-%24pull
+      Meteor.users.update(
+        {_id: user._id,
+         'emails.address': tokenRecord.address},
+        {$set: {'emails.$.verified': true},
+         $pull: {'services.email.verificationTokens': {token: token}}});
 
-  // By including the address in the query, we can use 'emails.$' in the
-  // modifier to get a reference to the specific object in the emails
-  // array. See
-  // http://www.mongodb.org/display/DOCS/Updating/#Updating-The%24positionaloperator)
-  // http://www.mongodb.org/display/DOCS/Updating#Updating-%24pull
-  Meteor.users.update(
-    {_id: user._id,
-     'emails.address': tokenRecord.address},
-    {$set: {'emails.$.verified': true},
-     $pull: {'services.email.verificationTokens': {token: token}},
-     $push: {'services.resume.loginTokens': stampedLoginToken}});
-
-  this.setUserId(user._id);
-  return {token: stampedLoginToken.token, id: user._id};
+      return {userId: user._id};
+    }
+  );
 }});
 
 
@@ -412,17 +634,14 @@ Meteor.methods({verifyEmail: function (token) {
 // if originates in client or server code. Calls user provided hooks,
 // does the actual user insertion.
 //
-// returns an object with id: userId, and (if options.generateLoginToken is
-// set) token: loginToken.
+// returns the user id
 var createUser = function (options) {
   // Unknown keys allowed, because a onCreateUserHook can take arbitrary
   // options.
   check(options, Match.ObjectIncluding({
-    generateLoginToken: Boolean,
     username: Match.Optional(String),
     email: Match.Optional(String),
-    password: Match.Optional(String),
-    srp: Match.Optional(Meteor._srp.matchVerifier)
+    password: Match.Optional(passwordValidator)
   }));
 
   var username = options.username;
@@ -430,18 +649,12 @@ var createUser = function (options) {
   if (!username && !email)
     throw new Meteor.Error(400, "Need to set a username or email");
 
-  // Raw password. The meteor client doesn't send this, but a DDP
-  // client that didn't implement SRP could send this. This should
-  // only be done over SSL.
+  var user = {services: {}};
   if (options.password) {
-    if (options.srp)
-      throw new Meteor.Error(400, "Don't pass both password and srp in options");
-    options.srp = Meteor._srp.generateVerifier(options.password);
+    var hashed = hashPassword(options.password);
+    user.services.password = { bcrypt: hashed };
   }
 
-  var user = {services: {}};
-  if (options.srp)
-    user.services.password = {srp: options.srp}; // XXX validate verifier
   if (username)
     user.username = username;
   if (email)
@@ -452,28 +665,37 @@ var createUser = function (options) {
 
 // method for create user. Requests come from the client.
 Meteor.methods({createUser: function (options) {
-  // createUser() above does more checking.
-  check(options, Object);
-  options.generateLoginToken = true;
-  if (Accounts._options.forbidClientAccountCreation)
-    throw new Meteor.Error(403, "Signups forbidden");
+  var self = this;
+  return Accounts._loginMethod(
+    self,
+    "createUser",
+    arguments,
+    "password",
+    function () {
+      // createUser() above does more checking.
+      check(options, Object);
+      if (Accounts._options.forbidClientAccountCreation)
+        return {
+          error: new Meteor.Error(403, "Signups forbidden")
+        };
 
-  // Create user. result contains id and token.
-  var result = createUser(options);
-  // safety belt. createUser is supposed to throw on error. send 500 error
-  // instead of sending a verification email with empty userid.
-  if (!result.id)
-    throw new Error("createUser failed to insert new user");
+      // Create user. result contains id and token.
+      var userId = createUser(options);
+      // safety belt. createUser is supposed to throw on error. send 500 error
+      // instead of sending a verification email with empty userid.
+      if (! userId)
+        throw new Error("createUser failed to insert new user");
 
-  // If `Accounts._options.sendVerificationEmail` is set, register
-  // a token to verify the user's primary email, and send it to
-  // that address.
-  if (options.email && Accounts._options.sendVerificationEmail)
-    Accounts.sendVerificationEmail(result.id, options.email);
+      // If `Accounts._options.sendVerificationEmail` is set, register
+      // a token to verify the user's primary email, and send it to
+      // that address.
+      if (options.email && Accounts._options.sendVerificationEmail)
+        Accounts.sendVerificationEmail(userId, options.email);
 
-  // client gets logged in as the new user afterwards.
-  this.setUserId(result.id);
-  return result;
+      // client gets logged in as the new user afterwards.
+      return {userId: userId};
+    }
+  );
 }});
 
 // Create user directly on the server.
@@ -487,18 +709,16 @@ Meteor.methods({createUser: function (options) {
 // which is always empty when called from the createUser method? eg, "admin:
 // true", which we want to prevent the client from setting, but which a custom
 // method calling Accounts.createUser could set?
+//
 Accounts.createUser = function (options, callback) {
   options = _.clone(options);
-  options.generateLoginToken = false;
 
   // XXX allow an optional callback?
   if (callback) {
     throw new Error("Accounts.createUser with callback not supported on the server yet.");
   }
 
-  var userId = createUser(options).id;
-
-  return userId;
+  return createUser(options);
 };
 
 ///
@@ -506,5 +726,5 @@ Accounts.createUser = function (options, callback) {
 ///
 Meteor.users._ensureIndex('emails.validationTokens.token',
                           {unique: 1, sparse: 1});
-Meteor.users._ensureIndex('emails.password.reset.token',
+Meteor.users._ensureIndex('services.password.reset.token',
                           {unique: 1, sparse: 1});

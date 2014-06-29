@@ -10,8 +10,10 @@ var respond = function(req, res) {
     return;
   } else if (req.url === "/fail") {
     res.statusCode = 500;
-    res.end("SOME SORT OF SERVER ERROR. " +
-            "MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. MAKE THIS VERY LONG TO MAKE SURE WE TRUNCATE. ");
+    res.end("SOME SORT OF SERVER ERROR. foo" +
+            _.times(100, function () {
+              return "MAKE THIS LONG TO TEST THAT WE TRUNCATE";
+            }).join(' '));
     return;
   } else if (req.url === "/redirect") {
     res.statusCode = 301;
@@ -21,7 +23,6 @@ var respond = function(req, res) {
     res.end("REDIRECT TO FOO");
     return;
   } else if (req.url.slice(0,6) === "/login") {
-    var connect = Npm.require('connect');
     var username = 'meteor';
     // get password from query string
     var password = req.url.slice(7);
@@ -30,7 +31,7 @@ var respond = function(req, res) {
     var validate = function(user, pass) {
       return user === username && pass === password;
     };
-    var checker = connect.basicAuth(validate, realm);
+    var checker = WebApp.__basicAuth__(validate, realm);
     var success = false;
     checker(req, res, function() {
       success = true;
@@ -74,9 +75,8 @@ var respond = function(req, res) {
 };
 
 var run_responder = function() {
-
-  var app = __meteor_bootstrap__.app;
-  app.stack.unshift({ route: TEST_RESPONDER_ROUTE, handle: respond });
+  WebApp.connectHandlers.stack.unshift(
+    { route: TEST_RESPONDER_ROUTE, handle: respond });
 };
 
 run_responder();

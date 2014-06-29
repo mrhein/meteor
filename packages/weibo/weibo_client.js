@@ -1,3 +1,5 @@
+Weibo = {};
+
 // Request Weibo credentials for the user
 // @param options {optional}
 // @param credentialRequestCompleteCallback {Function} Callback function to call on
@@ -12,11 +14,12 @@ Weibo.requestCredential = function (options, credentialRequestCompleteCallback) 
 
   var config = ServiceConfiguration.configurations.findOne({service: 'weibo'});
   if (!config) {
-    credentialRequestCompleteCallback && credentialRequestCompleteCallback(new ServiceConfiguration.ConfigError("Service not configured"));
+    credentialRequestCompleteCallback && credentialRequestCompleteCallback(
+      new ServiceConfiguration.ConfigError());
     return;
   }
 
-  var credentialToken = Random.id();
+  var credentialToken = Random.secret();
   // XXX need to support configuring access_type and scope
   var loginUrl =
         'https://api.weibo.com/oauth2/authorize' +
@@ -25,5 +28,8 @@ Weibo.requestCredential = function (options, credentialRequestCompleteCallback) 
         '&redirect_uri=' + Meteor.absoluteUrl('_oauth/weibo?close', {replaceLocalhost: true}) +
         '&state=' + credentialToken;
 
-  Oauth.initiateLogin(credentialToken, loginUrl, credentialRequestCompleteCallback);
+  OAuth.showPopup(
+    loginUrl,
+    _.bind(credentialRequestCompleteCallback, null, credentialToken)
+  );
 };

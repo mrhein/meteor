@@ -1,63 +1,73 @@
-// A place to store request tokens pending verification
-Oauth1._requestTokens = {};
-
 // connect middleware
-Oauth1._handleRequest = function (service, query, res) {
+OAuth._requestHandlers['1'] = function (service, query, res) {
 
   var config = ServiceConfiguration.configurations.findOne({service: service.serviceName});
   if (!config) {
-    throw new ServiceConfiguration.ConfigError("Service " + service.serviceName + " not configured");
+    throw new ServiceConfiguration.ConfigError(service.serviceName);
   }
 
   var urls = service.urls;
-  var oauthBinding = new OAuth1Binding(
-    config.consumerKey, config.secret, urls);
+  var oauthBinding = new OAuth1Binding(config, urls);
 
   if (query.requestTokenAndRedirect) {
     // step 1 - get and store a request token
+    var callbackUrl = Meteor.absoluteUrl("_oauth/" + service.serviceName +
+                                         "?close&state=" +
+                                         query.state);
 
     // Get a request token to start auth process
-    oauthBinding.prepareRequestToken(query.requestTokenAndRedirect);
+    oauthBinding.prepareRequestToken(callbackUrl);
 
     // Keep track of request token so we can verify it on the next step
-    Oauth1._requestTokens[query.state] = oauthBinding.requestToken;
+    OAuth._storeRequestToken(query.state,
+      oauthBinding.requestToken,
+      oauthBinding.requestTokenSecret
+    );
+
+    // support for scope/name parameters
+    var redirectUrl = undefined;
+    if(typeof urls.authenticate === "function") {
+      redirectUrl = urls.authenticate(oauthBinding);
+    } else {
+      redirectUrl = urls.authenticate + '?oauth_token=' + oauthBinding.requestToken;
+    }
 
     // redirect to provider login, which will redirect back to "step 2" below
-    var redirectUrl = urls.authenticate + '?oauth_token=' + oauthBinding.requestToken;
     res.writeHead(302, {'Location': redirectUrl});
     res.end();
   } else {
-    // step 2, redirected from provider login - complete the login
-    // process: if the user authorized permissions, get an access
-    // token and access token secret and log in as user
+    // step 2, redirected from provider login - store the result
+    // and close the window to allow the login handler to proceed
 
     // Get the user's request token so we can verify it and clear it
-    var requestToken = Oauth1._requestTokens[query.state];
-    delete Oauth1._requestTokens[query.state];
+    var requestTokenInfo = OAuth._retrieveRequestToken(query.state);
 
     // Verify user authorized access and the oauth_token matches
     // the requestToken from previous step
-    if (query.oauth_token && query.oauth_token === requestToken) {
+    if (query.oauth_token && query.oauth_token === requestTokenInfo.requestToken) {
 
       // Prepare the login results before returning.  This way the
       // subsequent call to the `login` method will be immediate.
 
       // Get the access token for signing requests
-      oauthBinding.prepareAccessToken(query);
+      oauthBinding.prepareAccessToken(query, requestTokenInfo.requestTokenSecret);
 
       // Run service-specific handler.
       var oauthResult = service.handleOauthRequest(oauthBinding);
 
-      // Add the login result to the result map
-      Oauth._loginResultForCredentialToken[query.state] = {
-          serviceName: service.serviceName,
-          serviceData: oauthResult.serviceData,
-          options: oauthResult.options
-        };
+      var credentialSecret = Random.secret();
+
+      // Store the login result so it can be retrieved in another
+      // browser tab by the result handler
+      OAuth._storePendingCredential(query.state, {
+        serviceName: service.serviceName,
+        serviceData: oauthResult.serviceData,
+        options: oauthResult.options
+      }, credentialSecret);
     }
 
     // Either close the window, redirect, or render nothing
     // if all else fails
-    Oauth._renderOauthResults(res, query);
+    OAuth._renderOauthResults(res, query, credentialSecret);
   }
 };
