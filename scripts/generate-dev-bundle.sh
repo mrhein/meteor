@@ -162,7 +162,7 @@ wget $OPENSSL_URL || curl -O $OPENSSL_URL
 tar xzf $OPENSSL.tar.gz
 
 cd $OPENSSL
-if [ "$UNAME" == "Linux" ]; then
+if [ "$UNAME" != "Darwin" ]; then
     ./config --prefix="$DIR/build/openssl-out" no-shared
 else
     # This configuration line is taken from Homebrew formula:
@@ -193,10 +193,12 @@ if [ "$MONGO_OS" == "osx" ]; then
     MONGO_FLAGS+="--openssl=$DIR/build/openssl-out/lib "
     /usr/local/bin/scons $MONGO_FLAGS mongo mongod
 elif [ "$MONGO_OS" == "freebsd" ]; then
+    MONGO_FLAGS+="--openssl=$DIR/build/openssl-out/lib "
     MONGO_FLAGS+="--no-glibc-check --prefix=./ "
     if [ "$ARCH" == "x86_64" ]; then
       MONGO_FLAGS+="--64"
     fi
+    MONGO_FLAGS+="--cc=gcc --cxx=g++ "
     scons $MONGO_FLAGS mongo mongod
 elif [ "$MONGO_OS" == "linux" ]; then
     MONGO_FLAGS+="--no-glibc-check --prefix=./ "
